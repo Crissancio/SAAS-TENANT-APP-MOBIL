@@ -1,512 +1,793 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  TextInput,
+  TouchableOpacity,
+  ActivityIndicator,
+  RefreshControl,
+  Modal,
+  Image,
+} from "react-native";
+import { Feather, MaterialCommunityIcons, Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../contexts/auth-context";
 import { useRouter } from "expo-router";
-import { View, Text, StyleSheet, Image, TouchableOpacity, FlatList } from "react-native";
-import { Feather, MaterialCommunityIcons } from "@expo/vector-icons";
-import { Input } from "../../components/ui/Input";
-import { Card, CardContent } from "../../components/ui/Card";
-import { Badge } from "../../components/ui/Badge";
-import { Dialog, DialogHeader, DialogTitle, DialogDescription } from "../../components/ui/Dialog";
+import { Toast } from "../../components/ui/Toast";
+import type { Producto, Stock } from "../../types";
+import { getProductosActivosPorMicroempresa, getStockPorMicroempresa } from "../../services/api";
 
-// Simulación de datos (reemplaza por tu contexto real)
-type Product = {
-  id: number;
-  name: string;
-  category: string;
-  price: number;
-  stock: number;
-  minStock: number;
-  image: any;
-  description: string;
+// Colores del tema
+const COLORS = {
+  background: "#042326",
+  card: "#0A3A40",
+  border: "#15545A",
+  primary: "#1D7373",
+  button: "#107361",
+  text: "#FFFFFF",
+  muted: "#B6C2CF",
+  success: "#10B981",
+  warning: "#F59E0B",
+  error: "#EF4444",
 };
 
-const PRODUCTS: Product[] = [
-  {
-    id: 1,
-    name: "Laptop HP",
-    category: "Electrónica",
-    price: 4500,
-    stock: 5,
-    minStock: 3,
-    image: require("../../assets/images/laptop-hp.jpg"),
-    description: "Laptop HP 15.6\" Intel Core i5",
-  },
-  {
-    id: 2,
-    name: "Mouse Logitech",
-    category: "Accesorios",
-    price: 85,
-    stock: 2,
-    minStock: 5,
-    image: require("../../assets/images/mouse-logitech.jpg"),
-    description: "Mouse inalámbrico Logitech M170",
-  },
-  {
-    id: 3,
-    name: "Teclado Mecánico",
-    category: "Accesorios",
-    price: 320,
-    stock: 8,
-    minStock: 2,
-    image: require("../../assets/images/teclado-mecanico.jpg"),
-    description: "Teclado Mecánico retroiluminado",
-  },
-  {
-    id: 4,
-    name: "Monitor LG 24\"",
-    category: "Electrónica",
-    price: 890,
-    stock: 12,
-    minStock: 3,
-    image: require("../../assets/images/monitor-lg.jpg"),
-    description: "Monitor LG 24\" Full HD",
-  },
-  {
-    id: 5,
-    name: "Webcam HD",
-    category: "Accesorios",
-    price: 250,
-    stock: 1,
-    minStock: 2,
-    image: require("../../assets/images/webcam.jpg"),
-    description: "Webcam HD 1080p",
-  },
-];
+// Tipo combinado
+interface ItemInventario {
+  producto: Producto;
+  stock: Stock | null;
+  cantidad: number;
+  stockMinimo: number;
+  estado: "ok" | "bajo" | "sin";
+}
 
+type FilterType = "todos" | "ok" | "bajo" | "sin";
 
-export default function InventoryScreen() {
-  const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<Product | null>(null);
-  const [showDetail, setShowDetail] = useState(false);
+const InventoryScreen: React.FC = () => {
   const { user } = useAuth();
   const router = useRouter();
-  React.useEffect(() => {
+
+  // Estados
+  const [inventario, setInventario] = useState<ItemInventario[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filter, setFilter] = useState<FilterType>("todos");
+  const [selectedItem, setSelectedItem] = useState<ItemInventario | null>(null);
+  const [toast, setToast] = useState<{ visible: boolean; message: string; type?: "success" | "error" | "info" }>({
+    visible: false,
+    message: ""
+  });
+
+  // Redirigir si no hay usuario
+  useEffect(() => {
     if (!user) router.replace("/login");
   }, [user, router]);
 
-  const filtered = PRODUCTS.filter(
-    (p) =>
-      p.name.toLowerCase().includes(search.toLowerCase()) ||
-      p.category.toLowerCase().includes(search.toLowerCase())
-  );
-  const lowStockCount = PRODUCTS.filter((p) => p.stock <= p.minStock).length;
+  // Cargar inventario (productos + stock)
+  const loadInventario = useCallback(async () => {
+    if (!user?.microempresa?.id_microempresa) return;
 
-  const handleShowDetail = (product: Product) => {
-    setSelected(product);
-    setShowDetail(true);
+    try {
+      setLoading(true);
+      const idMicro = user.microempresa.id_microempresa.toString();
+
+      // Cargar productos y stock en paralelo
+      const [productosRes, stockRes] = await Promise.all([
+        getProductosActivosPorMicroempresa(idMicro),
+        getStockPorMicroempresa(idMicro),
+      ]);
+
+      // Crear mapa de stock por producto
+      const stockMap = new Map<number, Stock>();
+      (stockRes.data || []).forEach((s: Stock) => {
+        stockMap.set(s.id_producto, s);
+      });
+
+      // Combinar productos con stock
+      const items: ItemInventario[] = (productosRes.data || []).map((p: Producto) => {
+        const stock = stockMap.get(p.id_producto);
+        const cantidad = stock?.cantidad ?? 0;
+        const stockMinimo = stock?.stock_minimo ?? 0;
+
+        let estado: "ok" | "bajo" | "sin" = "ok";
+        if (cantidad === 0) estado = "sin";
+        else if (cantidad <= stockMinimo) estado = "bajo";
+
+        return {
+          producto: p,
+          stock,
+          cantidad,
+          stockMinimo,
+          estado,
+        };
+      });
+
+      setInventario(items);
+    } catch (error) {
+      console.error("Error cargando inventario:", error);
+      setToast({ visible: true, message: "Error al cargar inventario", type: "error" });
+    } finally {
+      setLoading(false);
+    }
+  }, [user?.microempresa?.id_microempresa]);
+
+  useEffect(() => {
+    loadInventario();
+  }, [loadInventario]);
+
+  // Refresh
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadInventario();
+    setRefreshing(false);
   };
-  const handleCloseDetail = () => {
-    setShowDetail(false);
-    setSelected(null);
+
+  // Filtrar inventario
+  const filteredInventario = useMemo(() => {
+    return inventario.filter((item) => {
+      const matchSearch = item.producto.nombre.toLowerCase().includes(searchQuery.toLowerCase());
+      if (filter === "ok") return matchSearch && item.estado === "ok";
+      if (filter === "bajo") return matchSearch && item.estado === "bajo";
+      if (filter === "sin") return matchSearch && item.estado === "sin";
+      return matchSearch;
+    });
+  }, [inventario, searchQuery, filter]);
+
+  // Estadísticas
+  const stats = useMemo(() => ({
+    total: inventario.length,
+    ok: inventario.filter(i => i.estado === "ok").length,
+    bajo: inventario.filter(i => i.estado === "bajo").length,
+    sin: inventario.filter(i => i.estado === "sin").length,
+  }), [inventario]);
+
+  // URL de imagen
+  const getImageUrl = (imagen?: string) => {
+    if (!imagen) return null;
+    const baseUrl = process.env.EXPO_PUBLIC_API_URL || '';
+    return `${baseUrl}${imagen}`;
   };
+
+  // Render item de la lista
+  const renderItem = ({ item }: { item: ItemInventario }) => {
+    const statusColor = item.estado === "sin" ? COLORS.error
+      : item.estado === "bajo" ? COLORS.warning
+        : COLORS.success;
+
+    const statusText = item.estado === "sin" ? "Sin stock"
+      : item.estado === "bajo" ? "Stock bajo"
+        : "En stock";
+
+    const porcentaje = item.stockMinimo > 0
+      ? Math.min((item.cantidad / (item.stockMinimo * 2)) * 100, 100)
+      : item.cantidad > 0 ? 100 : 0;
+
+    const imageUrl = getImageUrl(item.producto.imagen);
+
+    return (
+      <TouchableOpacity
+        style={styles.card}
+        onPress={() => setSelectedItem(item)}
+        activeOpacity={0.7}
+      >
+        {/* Imagen */}
+        <View style={styles.imageContainer}>
+          {imageUrl ? (
+            <Image
+              source={{ uri: imageUrl }}
+              style={styles.image}
+              resizeMode="cover"
+            />
+          ) : (
+            <MaterialCommunityIcons name="package-variant" size={28} color={COLORS.muted} />
+          )}
+        </View>
+
+        {/* Info */}
+        <View style={styles.info}>
+          <Text style={styles.nombre} numberOfLines={1}>{item.producto.nombre}</Text>
+
+          <Text style={styles.precio}>
+            Bs. {item.producto.precio_venta?.toFixed(2) || "0.00"}
+          </Text>
+
+          {/* Stock info */}
+          <View style={styles.stockRow}>
+            <View style={styles.stockInfo}>
+              <Text style={styles.stockLabel}>Actual</Text>
+              <Text style={[styles.stockValue, { color: statusColor }]}>{item.cantidad}</Text>
+            </View>
+            <View style={styles.stockDivider} />
+            <View style={styles.stockInfo}>
+              <Text style={styles.stockLabel}>Mínimo</Text>
+              <Text style={styles.stockMinValue}>{item.stockMinimo}</Text>
+            </View>
+          </View>
+
+          {/* Barra de progreso */}
+          <View style={styles.progressBg}>
+            <View style={[styles.progressBar, { width: `${porcentaje}%`, backgroundColor: statusColor }]} />
+          </View>
+        </View>
+
+        {/* Badge de estado */}
+        <View style={[styles.badge, { backgroundColor: statusColor + "22" }]}>
+          <Ionicons
+            name={item.estado === "sin" ? "alert-circle" : item.estado === "bajo" ? "alert" : "checkmark-circle"}
+            size={14}
+            color={statusColor}
+          />
+          <Text style={[styles.badgeText, { color: statusColor }]}>{statusText}</Text>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  if (loading && inventario.length === 0) {
+    return (
+      <View style={[styles.container, styles.centered]}>
+        <ActivityIndicator size="large" color={COLORS.primary} />
+        <Text style={styles.loadingText}>Cargando inventario...</Text>
+      </View>
+    );
+  }
 
   return (
-    <View style={styles.bg}>
+    <View style={styles.container}>
+      <Toast
+        visible={toast.visible}
+        message={toast.message}
+        type={toast.type}
+        onHide={() => setToast({ ...toast, visible: false })}
+      />
+
       {/* Header */}
-      <View style={styles.headerBox}>
+      <View style={styles.header}>
         <Text style={styles.headerTitle}>Inventario</Text>
-        {lowStockCount > 0 && (
-          <Badge variant="destructive" style={styles.lowStockBadge}>
-            <Feather name="alert-triangle" size={13} color="#fff" style={{ marginRight: 2 }} />
-            {lowStockCount} bajo stock
-          </Badge>
+        <TouchableOpacity onPress={onRefresh} style={styles.refreshBtn}>
+          <Feather name="refresh-cw" size={20} color={COLORS.text} />
+        </TouchableOpacity>
+      </View>
+
+      {/* Stats Cards */}
+      <View style={styles.statsRow}>
+        <View style={[styles.statCard, { borderLeftColor: COLORS.success }]}>
+          <Text style={styles.statNumber}>{stats.ok}</Text>
+          <Text style={styles.statLabel}>En stock</Text>
+        </View>
+        <View style={[styles.statCard, { borderLeftColor: COLORS.warning }]}>
+          <Text style={styles.statNumber}>{stats.bajo}</Text>
+          <Text style={styles.statLabel}>Stock bajo</Text>
+        </View>
+        <View style={[styles.statCard, { borderLeftColor: COLORS.error }]}>
+          <Text style={styles.statNumber}>{stats.sin}</Text>
+          <Text style={styles.statLabel}>Sin stock</Text>
+        </View>
+      </View>
+
+      {/* Buscador */}
+      <View style={styles.searchContainer}>
+        <Feather name="search" size={18} color={COLORS.muted} style={styles.searchIcon} />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Buscar producto..."
+          placeholderTextColor={COLORS.muted}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+        />
+        {searchQuery.length > 0 && (
+          <TouchableOpacity onPress={() => setSearchQuery("")}>
+            <Feather name="x" size={18} color={COLORS.muted} />
+          </TouchableOpacity>
         )}
       </View>
-      {/* Buscador */}
-      <View style={styles.searchBox}>
-        <Feather name="search" size={18} color="#A0B6B8" style={styles.searchIcon} />
-        <Input
-          placeholder="Buscar productos..."
-          value={search}
-          onChangeText={setSearch}
-          style={styles.input}
-        />
+
+      {/* Filtros */}
+      <View style={styles.filterRow}>
+        {([
+          { key: "todos", label: "Todos", count: stats.total },
+          { key: "ok", label: "En stock", count: stats.ok },
+          { key: "bajo", label: "Bajo", count: stats.bajo },
+          { key: "sin", label: "Sin stock", count: stats.sin },
+        ] as const).map((f) => (
+          <TouchableOpacity
+            key={f.key}
+            style={[styles.filterBtn, filter === f.key && styles.filterBtnActive]}
+            onPress={() => setFilter(f.key)}
+          >
+            <Text style={[styles.filterText, filter === f.key && styles.filterTextActive]}>
+              {f.label}
+            </Text>
+            <View style={[styles.filterBadge, filter === f.key && styles.filterBadgeActive]}>
+              <Text style={[styles.filterBadgeText, filter === f.key && styles.filterBadgeTextActive]}>
+                {f.count}
+              </Text>
+            </View>
+          </TouchableOpacity>
+        ))}
       </View>
-      {/* Línea divisoria debajo del buscador */}
-      <View style={styles.divider} />
-      {/* Lista de productos */}
+
+      {/* Lista */}
       <FlatList
-        data={filtered}
-        keyExtractor={(item) => item.id.toString()}
-        contentContainerStyle={styles.listContent}
-        showsVerticalScrollIndicator={false}
-        renderItem={({ item }) => {
-          const lowStock = item.stock <= item.minStock;
-          const stockPercent = Math.min((item.stock / item.minStock) * 100, 100);
-          return (
-            <TouchableOpacity activeOpacity={0.9} onPress={() => handleShowDetail(item)}>
-              <Card style={styles.card}>
-                <CardContent style={styles.cardContent}>
-                  <View style={styles.productRow}>
-                    <View style={styles.imageBox}>
-                      <Image source={item.image} style={styles.image} resizeMode="cover" />
-                    </View>
-                    <View style={styles.infoBox}>
-                      <View style={styles.rowBetween}>
-                        <Text style={styles.productName} numberOfLines={1}>{item.name}</Text>
-                        {lowStock && (
-                          <Badge variant="destructive" style={styles.badgeBajo}>Bajo</Badge>
-                        )}
-                      </View>
-                      <Text style={styles.productCategory}>{item.category}</Text>
-                      <View style={styles.rowBetween}>
-                        <View>
-                          <Text style={styles.productPrice}>Bs. {item.price.toLocaleString()}</Text>
-                          <Text style={styles.productStock}>Stock: {item.stock} unidades</Text>
-                        </View>
-                        <View style={styles.stockBarBox}>
-                          <View style={styles.stockBarBg}>
-                            <View style={[styles.stockBarFill, lowStock ? styles.stockBarFillLow : styles.stockBarFillOk, { width: `${stockPercent}%` }]} />
-                          </View>
-                        </View>
-                      </View>
-                    </View>
-                  </View>
-                </CardContent>
-              </Card>
-            </TouchableOpacity>
-          );
-        }}
+        data={filteredInventario}
+        renderItem={renderItem}
+        keyExtractor={(item) => item.producto.id_producto.toString()}
+        contentContainerStyle={styles.list}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />
+        }
         ListEmptyComponent={
-          <View style={styles.emptyBox}>
-            <MaterialCommunityIcons name="package-variant" size={48} color="#A0B6B8" style={{ marginBottom: 8 }} />
-            <Text style={styles.emptyText}>No se encontraron productos</Text>
+          <View style={styles.emptyContainer}>
+            <MaterialCommunityIcons name="package-variant" size={48} color={COLORS.muted} />
+            <Text style={styles.emptyText}>
+              {searchQuery
+                ? "No se encontraron productos"
+                : filter !== "todos"
+                  ? `No hay productos con este estado`
+                  : "No hay productos en inventario"
+              }
+            </Text>
           </View>
         }
       />
-      {/* Dialog de detalle */}
-      <Dialog visible={showDetail} onClose={handleCloseDetail} style={styles.dialogContent}>
-        {selected && (
-          <>
-            <DialogHeader>
-              <DialogTitle>{selected.name}</DialogTitle>
-              <DialogDescription>Detalles del producto</DialogDescription>
-            </DialogHeader>
-            <View style={styles.detailImageBox}>
-              <Image source={selected.image} style={styles.detailImage} resizeMode="contain" />
+
+      {/* Modal de detalle */}
+      <Modal
+        visible={!!selectedItem}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setSelectedItem(null)}
+      >
+        {selectedItem && (
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <TouchableOpacity onPress={() => setSelectedItem(null)} style={styles.modalCloseBtn}>
+                <Ionicons name="close" size={24} color={COLORS.text} />
+              </TouchableOpacity>
+              <Text style={styles.modalTitle}>Detalle de Producto</Text>
+              <View style={{ width: 40 }} />
             </View>
-            <View style={styles.detailSection}>
-              <Text style={styles.detailLabel}>Descripción</Text>
-              <Text style={styles.detailValue}>{selected.description}</Text>
-            </View>
-            <View style={styles.detailRowGrid}>
-              <View style={styles.detailCol}>
-                <Text style={styles.detailLabel}>Categoría</Text>
-                <Badge variant="outline" style={styles.detailBadge}>{selected.category}</Badge>
+
+            <View style={styles.modalContent}>
+              {/* Imagen grande */}
+              <View style={styles.modalImageContainer}>
+                {getImageUrl(selectedItem.producto.imagen) ? (
+                  <Image
+                    source={{ uri: getImageUrl(selectedItem.producto.imagen) || '' }}
+                    style={styles.modalImage}
+                    resizeMode="contain"
+                  />
+                ) : (
+                  <MaterialCommunityIcons name="package-variant" size={80} color={COLORS.muted} />
+                )}
               </View>
-              <View style={styles.detailCol}>
-                <Text style={styles.detailLabel}>Precio</Text>
-                <Text style={styles.detailPrice}>Bs. {selected.price.toLocaleString()}</Text>
-              </View>
-            </View>
-            <View style={styles.detailDivider} />
-            <View style={styles.detailRowGrid}>
-              <View style={styles.detailCol}>
-                <Text style={styles.detailLabel}>Stock actual</Text>
-                <Text style={styles.detailStock}>{selected.stock}</Text>
-                <Text style={styles.detailStockUnit}>unidades</Text>
-              </View>
-              <View style={styles.detailCol}>
-                <Text style={styles.detailLabel}>Stock mínimo</Text>
-                <Text style={styles.detailStock}>{selected.minStock}</Text>
-                <Text style={styles.detailStockUnit}>unidades</Text>
-              </View>
-            </View>
-            {/* Estado de stock */}
-            {selected.stock <= selected.minStock ? (
-              <View style={styles.statusBoxLow}>
-                <Feather name="alert-triangle" size={20} color="#E53935" style={{ marginRight: 8 }} />
-                <View>
-                  <Text style={styles.statusTextLow}>Stock bajo</Text>
-                  <Text style={styles.statusSubTextLow}>Se recomienda reabastecer</Text>
+
+              {/* Info del producto */}
+              <Text style={styles.modalProductName}>{selectedItem.producto.nombre}</Text>
+
+              {selectedItem.producto.descripcion && (
+                <Text style={styles.modalDescription}>{selectedItem.producto.descripcion}</Text>
+              )}
+
+              <Text style={styles.modalPrice}>
+                Bs. {selectedItem.producto.precio_venta?.toFixed(2) || "0.00"}
+              </Text>
+
+              {/* Stock info */}
+              <View style={styles.modalStockCard}>
+                <View style={styles.modalStockRow}>
+                  <View style={styles.modalStockItem}>
+                    <Text style={styles.modalStockLabel}>Stock Actual</Text>
+                    <Text style={[
+                      styles.modalStockValue,
+                      {
+                        color: selectedItem.estado === "sin" ? COLORS.error
+                          : selectedItem.estado === "bajo" ? COLORS.warning
+                            : COLORS.success
+                      }
+                    ]}>
+                      {selectedItem.cantidad}
+                    </Text>
+                  </View>
+                  <View style={styles.modalStockItem}>
+                    <Text style={styles.modalStockLabel}>Stock Mínimo</Text>
+                    <Text style={styles.modalStockMinValue}>{selectedItem.stockMinimo}</Text>
+                  </View>
                 </View>
-              </View>
-            ) : (
-              <View style={styles.statusBoxOk}>
-                <Feather name="package" size={20} color="#22c55e" style={{ marginRight: 8 }} />
-                <View>
-                  <Text style={styles.statusTextOk}>Stock normal</Text>
-                  <Text style={styles.statusSubTextOk}>Inventario suficiente</Text>
+
+                {/* Estado */}
+                <View style={[
+                  styles.modalStatusBadge,
+                  {
+                    backgroundColor: (selectedItem.estado === "sin" ? COLORS.error
+                      : selectedItem.estado === "bajo" ? COLORS.warning
+                        : COLORS.success) + "22"
+                  }
+                ]}>
+                  <Ionicons
+                    name={selectedItem.estado === "sin" ? "alert-circle"
+                      : selectedItem.estado === "bajo" ? "alert"
+                        : "checkmark-circle"}
+                    size={18}
+                    color={selectedItem.estado === "sin" ? COLORS.error
+                      : selectedItem.estado === "bajo" ? COLORS.warning
+                        : COLORS.success}
+                  />
+                  <Text style={[
+                    styles.modalStatusText,
+                    {
+                      color: selectedItem.estado === "sin" ? COLORS.error
+                        : selectedItem.estado === "bajo" ? COLORS.warning
+                          : COLORS.success
+                    }
+                  ]}>
+                    {selectedItem.estado === "sin" ? "Sin stock"
+                      : selectedItem.estado === "bajo" ? "Stock bajo - Requiere reposición"
+                        : "Nivel de stock correcto"}
+                  </Text>
                 </View>
+
+                {/* Última actualización */}
+                {selectedItem.stock?.ultima_actualizacion && (
+                  <Text style={styles.modalLastUpdate}>
+                    Última actualización: {new Date(selectedItem.stock.ultima_actualizacion).toLocaleDateString()}
+                  </Text>
+                )}
               </View>
-            )}
-          </>
+            </View>
+          </View>
         )}
-      </Dialog>
+      </Modal>
     </View>
   );
-}
+};
 
+export default InventoryScreen;
 
 const styles = StyleSheet.create({
-  bg: { flex: 1, backgroundColor: '#042326' },
-  headerBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 18,
-    paddingTop: 28,
-    paddingBottom: 8,
-    backgroundColor: '#ffffff00',
-    borderBottomWidth: 1,
-    borderColor: '#15545A',
-    zIndex: 2,
+  container: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+    paddingTop: 48
+  },
+  centered: {
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  loadingText: {
+    color: COLORS.muted,
+    marginTop: 12,
+    fontSize: 14,
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    marginBottom: 16
   },
   headerTitle: {
-    color: '#fff',
-    fontSize: 17,
+    color: COLORS.text,
+    fontSize: 24,
+    fontWeight: "700"
   },
-  lowStockBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 2,
-    fontSize: 13,
-    height: 24,
-  },
-  searchBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 18,
-    paddingTop: 10,
-    paddingBottom: 10,
-    backgroundColor: '#0a3a4000',
-    zIndex: 1,
-  },
-  searchIcon: {
-    position: 'absolute',
-    left: 28,
-    top: 20,
-    zIndex: 2,
-  },
-  input: {
-    flex: 1,
-    paddingLeft: 32,
-    backgroundColor: '#14383C',
-    borderColor: '#1A4A50',
-    color: '#E6EAEA',
-    fontSize: 15,
-    minHeight: 44,
-    height: 44,
+  refreshBtn: {
+    padding: 8,
+    backgroundColor: COLORS.card,
     borderRadius: 8,
   },
-    divider: {
-      height: 1,
-      backgroundColor: '#15545A',
-      marginHorizontal: 0,
-      marginBottom: 2,
-    },
-  listContent: {
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    paddingBottom: 24,
+  statsRow: {
+    flexDirection: "row",
+    paddingHorizontal: 16,
+    marginBottom: 16,
+    gap: 10,
   },
-  card: {
-    marginBottom: 14,
-    borderRadius: 14,
-    borderWidth: 1.5,
-    borderColor: '#15545A',
-    backgroundColor: '#0A3A40',
-  },
-  cardContent: {
-    padding: 0,
-  },
-  productRow: {
-    flexDirection: 'row',
-    gap: 12,
-    alignItems: 'center',
-    padding: 4,
-  },
-  imageBox: {
-    width: 80,
-    height: 80,
+  statCard: {
+    flex: 1,
+    backgroundColor: COLORS.card,
     borderRadius: 10,
-    backgroundColor: '#14383C',
-    overflow: 'hidden',
-    marginRight: 10,
+    padding: 12,
+    borderLeftWidth: 3,
+    alignItems: "center",
+  },
+  statNumber: {
+    color: COLORS.text,
+    fontSize: 22,
+    fontWeight: "700",
+  },
+  statLabel: {
+    color: COLORS.muted,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  searchContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.card,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginHorizontal: 16,
+    paddingHorizontal: 12,
+    height: 44,
+    marginBottom: 12,
+  },
+  searchIcon: {
+    marginRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    color: COLORS.text,
+    fontSize: 15,
+  },
+  filterRow: {
+    flexDirection: "row",
+    paddingHorizontal: 16,
+    marginBottom: 12,
+    gap: 6,
+  },
+  filterBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 4,
+  },
+  filterBtnActive: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  filterText: {
+    color: COLORS.muted,
+    fontSize: 12,
+  },
+  filterTextActive: {
+    color: COLORS.text,
+    fontWeight: "500",
+  },
+  filterBadge: {
+    backgroundColor: COLORS.border,
+    borderRadius: 8,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    minWidth: 18,
+    alignItems: "center",
+  },
+  filterBadgeActive: {
+    backgroundColor: "rgba(255,255,255,0.2)",
+  },
+  filterBadgeText: {
+    color: COLORS.muted,
+    fontSize: 10,
+    fontWeight: "600",
+  },
+  filterBadgeTextActive: {
+    color: COLORS.text,
+  },
+  list: {
+    paddingHorizontal: 16,
+    paddingBottom: 20,
+  },
+
+  // Card de producto
+  card: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.card,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  imageContainer: {
+    width: 60,
+    height: 60,
+    borderRadius: 10,
+    backgroundColor: COLORS.background,
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 12,
+    overflow: "hidden",
   },
   image: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 10,
+    width: "100%",
+    height: "100%",
   },
-  infoBox: {
-    flex: 1,
-    minWidth: 0,
-  },
-  rowBetween: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 2,
-  },
-  productName: {
-    color: '#fff',
-    fontSize: 16,
+  info: {
     flex: 1,
   },
-  badgeBajo: {
-    marginLeft: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    fontSize: 12,
-    height: 20,
-  },
-  productCategory: {
-    color: '#A0B6B8',
-    fontSize: 13,
-    marginBottom: 2,
-  },
-  productPrice: {
-    color: '#22c55e',
+  nombre: {
+    color: COLORS.text,
     fontSize: 15,
+    fontWeight: "600",
+    marginBottom: 2,
   },
-  productStock: {
-    color: '#B6C2CF',
+  precio: {
+    color: COLORS.success,
+    fontSize: 13,
+    fontWeight: "500",
+    marginBottom: 6,
+  },
+  stockRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 6,
+  },
+  stockInfo: {
+    alignItems: "center",
+  },
+  stockLabel: {
+    color: COLORS.muted,
+    fontSize: 9,
+    marginBottom: 1,
+  },
+  stockValue: {
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  stockMinValue: {
+    color: COLORS.muted,
     fontSize: 12,
+    fontWeight: "600",
   },
-  stockBarBox: {
-    width: 48,
+  stockDivider: {
+    width: 1,
+    height: 18,
+    backgroundColor: COLORS.border,
+    marginHorizontal: 10,
+  },
+  progressBg: {
+    height: 3,
+    backgroundColor: COLORS.border,
+    borderRadius: 2,
+    overflow: "hidden",
+  },
+  progressBar: {
+    height: "100%",
+    borderRadius: 2,
+  },
+  badge: {
+    flexDirection: "column",
+    alignItems: "center",
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+    borderRadius: 8,
+    gap: 2,
     marginLeft: 8,
-    alignItems: 'flex-end',
   },
-  stockBarBg: {
-    width: '100%',
-    height: 7,
-    backgroundColor: '#14383C',
-    borderRadius: 6,
-    overflow: 'hidden',
+  badgeText: {
+    fontSize: 8,
+    fontWeight: "600",
+    textAlign: "center",
   },
-  stockBarFill: {
-    height: '100%',
-    borderRadius: 6,
-  },
-  stockBarFillOk: {
-    backgroundColor: '#22c55e',
-  },
-  stockBarFillLow: {
-    backgroundColor: '#E53935',
-  },
-  emptyBox: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 40,
+
+  emptyContainer: {
+    alignItems: "center",
+    marginTop: 48,
   },
   emptyText: {
-    color: '#A0B6B8',
-    fontSize: 15,
+    color: COLORS.muted,
+    textAlign: "center",
+    marginTop: 12,
+    fontSize: 15
   },
-  dialogContent: {
-    backgroundColor: '#0A3A40',
-    borderRadius: 18,
-    width: '100%',
-    padding: 20,
-  },
-  detailImageBox: {
-    width: '100%',
-    aspectRatio: 1,
-    backgroundColor: '#14383C',
-    borderRadius: 14,
-    overflow: 'hidden',
-    marginBottom: 18,
-    marginTop: 8,
-  },
-  detailImage: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 14,
-  },
-  detailSection: {
-    marginBottom: 12,
-    paddingHorizontal: 2,
-  },
-  detailLabel: {
-    color: '#A0B6B8',
-    fontSize: 13,
-    marginBottom: 2,
-  },
-  detailValue: {
-    color: '#fff',
-    fontSize: 15,
-  },
-  detailRowGrid: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 12,
-    marginBottom: 8,
-    paddingHorizontal: 2,
-  },
-  detailCol: {
+
+  // Modal
+  modalContainer: {
     flex: 1,
+    backgroundColor: COLORS.background,
   },
-  detailBadge: {
-    borderColor: '#1A4A50',
-    color: '#E6EAEA',
-    fontSize: 13,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    marginTop: 2,
-    alignSelf: 'flex-start',
-  },
-  detailPrice: {
-    color: '#22c55e',
-    fontSize: 18,
-    marginTop: 2,
-  },
-  detailDivider: {
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    paddingTop: 50,
     borderBottomWidth: 1,
-    borderColor: '#15545A',
-    marginVertical: 8,
-    marginHorizontal: 2,
+    borderBottomColor: COLORS.border,
   },
-  detailStock: {
-    color: '#fff',
-    fontSize: 20,
-    marginTop: 2,
+  modalCloseBtn: {
+    width: 40,
+    height: 40,
+    justifyContent: "center",
+    alignItems: "center",
   },
-  detailStockUnit: {
-    color: '#A0B6B8',
-    fontSize: 12,
-    marginBottom: 2,
+  modalTitle: {
+    color: COLORS.text,
+    fontSize: 18,
+    fontWeight: "600",
   },
-  statusBoxLow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#E5393520',
-    borderColor: '#E5393530',
+  modalContent: {
+    padding: 20,
+    alignItems: "center",
+  },
+  modalImageContainer: {
+    width: 200,
+    height: 200,
+    borderRadius: 16,
+    backgroundColor: COLORS.card,
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 20,
+    overflow: "hidden",
+  },
+  modalImage: {
+    width: "100%",
+    height: "100%",
+  },
+  modalProductName: {
+    color: COLORS.text,
+    fontSize: 22,
+    fontWeight: "700",
+    textAlign: "center",
+    marginBottom: 8,
+  },
+  modalDescription: {
+    color: COLORS.muted,
+    fontSize: 14,
+    textAlign: "center",
+    marginBottom: 12,
+  },
+  modalPrice: {
+    color: COLORS.success,
+    fontSize: 24,
+    fontWeight: "700",
+    marginBottom: 20,
+  },
+  modalStockCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 12,
+    padding: 16,
+    width: "100%",
     borderWidth: 1,
-    borderRadius: 10,
-    padding: 10,
-    marginTop: 10,
-    marginBottom: 2,
+    borderColor: COLORS.border,
   },
-  statusTextLow: {
-    color: '#E53935',
-    fontSize: 15,
-    marginBottom: 2,
+  modalStockRow: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    marginBottom: 16,
   },
-  statusSubTextLow: {
-    color: '#E53935',
+  modalStockItem: {
+    alignItems: "center",
+  },
+  modalStockLabel: {
+    color: COLORS.muted,
     fontSize: 12,
+    marginBottom: 4,
   },
-  statusBoxOk: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#22c55e20',
-    borderColor: '#22c55e30',
-    borderWidth: 1,
-    borderRadius: 10,
-    padding: 10,
-    marginTop: 10,
-    marginBottom: 2,
+  modalStockValue: {
+    fontSize: 32,
+    fontWeight: "700",
   },
-  statusTextOk: {
-    color: '#22c55e',
-    fontSize: 15,
-    marginBottom: 2,
+  modalStockMinValue: {
+    color: COLORS.muted,
+    fontSize: 28,
+    fontWeight: "600",
   },
-  statusSubTextOk: {
-    color: '#22c55e',
+  modalStatusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    gap: 8,
+    marginBottom: 12,
+  },
+  modalStatusText: {
+    fontSize: 14,
+    fontWeight: "500",
+  },
+  modalLastUpdate: {
+    color: COLORS.muted,
     fontSize: 12,
+    textAlign: "center",
   },
 });

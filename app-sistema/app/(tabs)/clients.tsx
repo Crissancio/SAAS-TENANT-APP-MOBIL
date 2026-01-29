@@ -1,227 +1,362 @@
-import React, { useState } from "react";
-import { View, Text, StyleSheet, ScrollView } from "react-native";
+import React, { useState, useEffect, useCallback } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  TextInput,
+  TouchableOpacity,
+  ActivityIndicator,
+  RefreshControl,
+  Alert
+} from "react-native";
 import { Feather, Ionicons } from "@expo/vector-icons";
-import { Card, CardContent } from "../../components/ui/Card";
-import { Badge } from "../../components/ui/Badge";
-import { Button } from "../../components/ui/Button";
-import { Input } from "../../components/ui/Input";
-import { Label } from "../../components/ui/Label";
-import { Dialog } from "../../components/ui/Dialog";
-import { AlertDialog } from "../../components/ui/AlertDialog";
-import { Toast } from "../../components/ui/Toast";
 import { useAuth } from "../../contexts/auth-context";
 import { useRouter } from "expo-router";
+import { Dialog } from "../../components/ui/Dialog";
+import { Button } from "../../components/ui/Button";
+import { Toast } from "../../components/ui/Toast";
+import { ClientCard } from "../../components/ClientCard";
+import type { Cliente, ClienteCreate } from "../../types";
+import {
+  getClientesPorMicroempresa,
+  crearCliente,
+  actualizarCliente,
+  bajaLogicaCliente,
+  habilitarCliente
+} from "../../services/api";
 
-// Tipado para cliente
-type Client = {
-  id: string;
-  name: string;
-  document: string;
-  phone: string;
-  email?: string;
-  active: boolean;
+// Colores del tema
+const COLORS = {
+  background: "#042326",
+  card: "#0A3A40",
+  border: "#15545A",
+  primary: "#1D7373",
+  button: "#107361",
+  text: "#FFFFFF",
+  muted: "#B6C2CF",
+  success: "#10B981",
+  error: "#EF4444",
 };
-
-const initialClients: Client[] = [
-  {
-    id: "1",
-    name: "Juan Pérez García",
-    document: "1234567",
-    phone: "71234567",
-    email: "juan.perez@email.com",
-    active: true,
-  },
-  {
-    id: "2",
-    name: "María López Rodríguez",
-    document: "7654321",
-    phone: "72345678",
-    email: "maria.lopez@email.com",
-    active: true,
-  },
-  {
-    id: "3",
-    name: "Carlos Mendoza Silva",
-    document: "5555555",
-    phone: "73456789",
-    email: "carlos.mendoza@email.com",
-    active: false,
-  },
-];
 
 const ClientsScreen: React.FC = () => {
   const { user } = useAuth();
   const router = useRouter();
-  React.useEffect(() => {
-    if (!user) router.replace("/login");
-  }, [user, router]);
-  const [clients, setClients] = useState<Client[]>(initialClients);
+
+  // Estados
+  const [clientes, setClientes] = useState<Cliente[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [showDialog, setShowDialog] = useState(false);
-  const [editingClient, setEditingClient] = useState<Client | null>(null);
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [clientToDelete, setClientToDelete] = useState<string | null>(null);
-  const [formData, setFormData] = useState({ name: "", document: "", phone: "", email: "" });
-  const [toast, setToast] = useState<{ visible: boolean; message: string; type?: "success" | "error" | "info" }>({ visible: false, message: "" });
+  const [editingClient, setEditingClient] = useState<Cliente | null>(null);
+  const [formData, setFormData] = useState({ nombre: "", documento: "", telefono: "", email: "" });
+  const [submitting, setSubmitting] = useState(false);
+  const [toast, setToast] = useState<{ visible: boolean; message: string; type?: "success" | "error" | "info" }>({
+    visible: false,
+    message: ""
+  });
+  const [filter, setFilter] = useState<"todos" | "activos" | "inactivos">("todos");
 
-  const filteredClients = clients.filter(
-    (client: Client) =>
-      client.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      client.document.includes(searchQuery)
-  );
+  // Redirigir si no hay usuario
+  useEffect(() => {
+    if (!user) router.replace("/login");
+  }, [user, router]);
 
-  const handleOpenDialog = (client?: Client) => {
-    if (client) {
-      setEditingClient(client);
+  // Cargar clientes desde el backend
+  const loadClientes = useCallback(async () => {
+    if (!user?.microempresa?.id_microempresa) return;
+
+    try {
+      setLoading(true);
+      const response = await getClientesPorMicroempresa(
+        user.microempresa.id_microempresa.toString()
+      );
+      setClientes(response.data);
+    } catch (error) {
+      console.error("Error cargando clientes:", error);
+      setToast({ visible: true, message: "Error al cargar clientes", type: "error" });
+    } finally {
+      setLoading(false);
+    }
+  }, [user?.microempresa?.id_microempresa]);
+
+  useEffect(() => {
+    loadClientes();
+  }, [loadClientes]);
+
+  // Refresh
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadClientes();
+    setRefreshing(false);
+  };
+
+  // Filtrar clientes
+  const filteredClientes = clientes.filter((cliente) => {
+    // Filtro de búsqueda
+    const matchSearch =
+      cliente.nombre.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (cliente.documento?.includes(searchQuery) ?? false);
+
+    // Filtro de estado
+    if (filter === "activos") return matchSearch && cliente.estado;
+    if (filter === "inactivos") return matchSearch && !cliente.estado;
+    return matchSearch;
+  });
+
+  // Abrir diálogo
+  const handleOpenDialog = (cliente?: Cliente) => {
+    if (cliente) {
+      setEditingClient(cliente);
       setFormData({
-        name: client.name,
-        document: client.document,
-        phone: client.phone,
-        email: client.email ?? "",
+        nombre: cliente.nombre,
+        documento: cliente.documento ?? "",
+        telefono: cliente.telefono ?? "",
+        email: cliente.email ?? "",
       });
     } else {
       setEditingClient(null);
-      setFormData({ name: "", document: "", phone: "", email: "" });
+      setFormData({ nombre: "", documento: "", telefono: "", email: "" });
     }
     setShowDialog(true);
   };
 
+  // Cerrar diálogo
   const handleCloseDialog = () => {
     setShowDialog(false);
     setEditingClient(null);
-    setFormData({ name: "", document: "", phone: "", email: "" });
+    setFormData({ nombre: "", documento: "", telefono: "", email: "" });
   };
 
-  const handleSubmit = () => {
-    if (!formData.name || !formData.document || !formData.phone) {
-      setToast({ visible: true, message: "Complete los campos obligatorios", type: "error" });
+  // Guardar cliente
+  const handleSubmit = async () => {
+    if (!formData.nombre.trim()) {
+      setToast({ visible: true, message: "El nombre es obligatorio", type: "error" });
       return;
     }
-    if (editingClient) {
-      setClients((prev: Client[]) =>
-        prev.map((c: Client) => (c.id === editingClient.id ? { ...c, ...formData } : c))
-      );
-      setToast({ visible: true, message: "Cliente editado", type: "success" });
-    } else {
-      setClients((prev: Client[]) => [
-        ...prev,
-        { ...formData, id: Date.now().toString(), active: true },
-      ]);
-      setToast({ visible: true, message: "Cliente creado", type: "success" });
+    if (!user?.microempresa?.id_microempresa) {
+      setToast({ visible: true, message: "Error: sin microempresa", type: "error" });
+      return;
     }
-    handleCloseDialog();
+
+    setSubmitting(true);
+    try {
+      if (editingClient) {
+        // Editar cliente existente
+        await actualizarCliente(editingClient.id_cliente.toString(), {
+          id_microempresa: user.microempresa.id_microempresa,
+          nombre: formData.nombre,
+          documento: formData.documento || undefined,
+          telefono: formData.telefono || undefined,
+          email: formData.email || undefined,
+        });
+        setToast({ visible: true, message: "Cliente actualizado", type: "success" });
+      } else {
+        // Crear nuevo cliente
+        const nuevoCliente: ClienteCreate = {
+          id_microempresa: user.microempresa.id_microempresa,
+          nombre: formData.nombre,
+          documento: formData.documento || undefined,
+          telefono: formData.telefono || undefined,
+          email: formData.email || undefined,
+        };
+        await crearCliente(nuevoCliente);
+        setToast({ visible: true, message: "Cliente creado", type: "success" });
+      }
+      handleCloseDialog();
+      await loadClientes();
+    } catch (error: any) {
+      console.error("Error guardando cliente:", error);
+      setToast({
+        visible: true,
+        message: error.response?.data?.detail || "Error al guardar",
+        type: "error"
+      });
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  const handleToggleActive = (client: Client) => {
-    setClients((prev: Client[]) =>
-      prev.map((c: Client) => (c.id === client.id ? { ...c, active: !c.active } : c))
+  // Cambiar estado de cliente
+  const handleToggleActive = async (cliente: Cliente) => {
+    try {
+      if (cliente.estado) {
+        await bajaLogicaCliente(cliente.id_cliente.toString());
+        setToast({ visible: true, message: "Cliente desactivado", type: "success" });
+      } else {
+        await habilitarCliente(cliente.id_cliente.toString());
+        setToast({ visible: true, message: "Cliente activado", type: "success" });
+      }
+      await loadClientes();
+    } catch (error) {
+      console.error("Error cambiando estado:", error);
+      setToast({ visible: true, message: "Error al cambiar estado", type: "error" });
+    }
+  };
+
+  // Render item de la lista
+  const renderItem = ({ item }: { item: Cliente }) => (
+    <ClientCard
+      cliente={item}
+      onPress={() => {
+        Alert.alert(
+          item.nombre,
+          `Documento: ${item.documento || "N/A"}\nTeléfono: ${item.telefono || "N/A"}\nEmail: ${item.email || "N/A"}`,
+          [
+            { text: "Cerrar", style: "cancel" },
+            { text: item.estado ? "Desactivar" : "Activar", onPress: () => handleToggleActive(item) },
+            { text: "Editar", onPress: () => handleOpenDialog(item) },
+          ]
+        );
+      }}
+      onEdit={() => handleOpenDialog(item)}
+    />
+  );
+
+  if (loading && clientes.length === 0) {
+    return (
+      <View style={[styles.container, styles.centered]}>
+        <ActivityIndicator size="large" color={COLORS.primary} />
+        <Text style={styles.loadingText}>Cargando clientes...</Text>
+      </View>
     );
-    setToast({
-      visible: true,
-      message: client.active ? "Cliente desactivado" : "Cliente activado",
-      type: "success",
-    });
-  };
-
-  const handleDeleteClick = (clientId: string) => {
-    setClientToDelete(clientId);
-    setDeleteDialogOpen(true);
-  };
-
-  const handleConfirmDelete = () => {
-    setClients((prev: Client[]) => prev.filter((c: Client) => c.id !== clientToDelete));
-    setDeleteDialogOpen(false);
-    setClientToDelete(null);
-    setToast({ visible: true, message: "Cliente eliminado", type: "success" });
-  };
+  }
 
   return (
     <View style={styles.container}>
-      <Toast visible={toast.visible} message={toast.message} type={toast.type} onHide={() => setToast({ ...toast, visible: false })} />
+      <Toast
+        visible={toast.visible}
+        message={toast.message}
+        type={toast.type}
+        onHide={() => setToast({ ...toast, visible: false })}
+      />
+
+      {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Clientes</Text>
-        <Button onPress={() => handleOpenDialog()} style={styles.addBtn}>
-          <Ionicons name="person-add" size={18} color="#FFF" style={{ marginRight: 4 }} />
+        <TouchableOpacity style={styles.addBtn} onPress={() => handleOpenDialog()}>
+          <Ionicons name="person-add" size={18} color="#FFF" />
           <Text style={styles.addBtnText}>Nuevo</Text>
-        </Button>
+        </TouchableOpacity>
       </View>
+
+      {/* Buscador */}
       <View style={styles.searchContainer}>
-        <Feather name="search" size={18} color="#FFF" style={{ marginLeft: 8, marginRight: 4 }} />
-        <Input
+        <Feather name="search" size={18} color={COLORS.muted} style={styles.searchIcon} />
+        <TextInput
+          style={styles.searchInput}
           placeholder="Buscar por nombre o documento..."
+          placeholderTextColor={COLORS.muted}
           value={searchQuery}
           onChangeText={setSearchQuery}
-          style={styles.searchInput}
-          placeholderTextColor="#FFFFFF"
         />
-      </View>
-      <View style={styles.divider} />
-      {/* Lista de clientes */}
-      <ScrollView style={styles.list}>
-        {filteredClients.length === 0 ? (
-          <Text style={styles.emptyText}>No se encontraron clientes</Text>
-        ) : (
-          filteredClients.map((client: Client) => (
-            <Card key={client.id} style={styles.card}>
-              <CardContent style={styles.cardContentColumn}>
-                <View style={styles.cardHeaderRow}>
-                  <Text style={styles.clientName}>{client.name}</Text>
-                  <Badge style={client.active ? styles.activeBadge : styles.inactiveBadge}>
-                    <Text style={styles.badgeText}>{client.active ? "Activo" : "Inactivo"}</Text>
-                  </Badge>
-                </View>
-                <View style={styles.cardInfoColumn}>
-                  <Text style={styles.clientDoc}>Doc: {client.document}</Text>
-                  <Text style={styles.clientPhone}>Tel: {client.phone}</Text>
-                  {client.email && <Text style={styles.clientEmail}>Email: {client.email}</Text>}
-                </View>
-                <View style={styles.cardButtonsRow}>
-                  <Button variant="outline" style={styles.actionBtn} onPress={() => handleOpenDialog(client)}>
-                    <Feather name="edit" size={16} color="#F5F7FA" style={{ marginRight: 4 }} />
-                    <Text style={styles.actionBtnText}>Editar</Text>
-                  </Button>
-                  <Button variant="outline" style={styles.actionBtn} onPress={() => handleToggleActive(client)}>
-                    <Feather name={client.active ? "user-x" : "user-check"} size={16} color="#F5F7FA" style={{ marginRight: 4 }} />
-                    <Text style={styles.actionBtnText}>{client.active ? "Desactivar" : "Activar"}</Text>
-                  </Button>
-                  <Button variant="outline" style={styles.deleteBtn} onPress={() => handleDeleteClick(client.id)}>
-                    <Feather name="trash-2" size={16} color="#E74C3C" style={{ marginRight: 4 }} />
-                  </Button>
-                </View>
-              </CardContent>
-            </Card>
-          ))
+        {searchQuery.length > 0 && (
+          <TouchableOpacity onPress={() => setSearchQuery("")}>
+            <Feather name="x" size={18} color={COLORS.muted} />
+          </TouchableOpacity>
         )}
-      </ScrollView>
+      </View>
 
-      {/* Dialogo para agregar/editar */}
-      <Dialog visible={showDialog} onClose={handleCloseDialog} style={styles.dialogModal}>
-        <Text style={styles.dialogTitle}>{editingClient ? "Editar cliente" : "Nuevo cliente"}</Text>
-        <Text style={styles.dialogSubtitle}>Complete los datos del cliente</Text>
-        <Label style={styles.dialogLabel}>Nombre completo *</Label>
-        <Input value={formData.name} onChangeText={(text) => setFormData((f) => ({ ...f, name: text }))} style={styles.dialogInput} placeholder="Nombre completo" placeholderTextColor="#A3B3BF" />
-        <Label style={styles.dialogLabel}>NIT / CI *</Label>
-        <Input value={formData.document} onChangeText={(text) => setFormData((f) => ({ ...f, document: text }))} style={styles.dialogInput} placeholder="NIT / CI" placeholderTextColor="#A3B3BF" />
-        <Label style={styles.dialogLabel}>Teléfono *</Label>
-        <Input value={formData.phone} onChangeText={(text) => setFormData((f) => ({ ...f, phone: text }))} style={styles.dialogInput} placeholder="Teléfono" placeholderTextColor="#A3B3BF" />
-        <Label style={styles.dialogLabel}>Email</Label>
-        <Input value={formData.email} onChangeText={(text) => setFormData((f) => ({ ...f, email: text }))} style={styles.dialogInput} placeholder="Email" placeholderTextColor="#A3B3BF" />
-        <View style={styles.dialogBtnRow}>
-          <Button onPress={handleSubmit} style={styles.saveBtn}>{editingClient ? "Guardar" : "Crear"}</Button>
-          <Button variant="outline" onPress={handleCloseDialog} style={styles.cancelBtn}>Cancelar</Button>
+      {/* Filtros */}
+      <View style={styles.filterRow}>
+        {(["todos", "activos", "inactivos"] as const).map((f) => (
+          <TouchableOpacity
+            key={f}
+            style={[styles.filterBtn, filter === f && styles.filterBtnActive]}
+            onPress={() => setFilter(f)}
+          >
+            <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
+              {f.charAt(0).toUpperCase() + f.slice(1)}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* Contador */}
+      <Text style={styles.countText}>
+        {filteredClientes.length} cliente{filteredClientes.length !== 1 ? "s" : ""}
+      </Text>
+
+      {/* Lista */}
+      <FlatList
+        data={filteredClientes}
+        renderItem={renderItem}
+        keyExtractor={(item) => item.id_cliente.toString()}
+        contentContainerStyle={styles.list}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />
+        }
+        ListEmptyComponent={
+          <View style={styles.emptyContainer}>
+            <Ionicons name="people-outline" size={48} color={COLORS.muted} />
+            <Text style={styles.emptyText}>
+              {searchQuery ? "No se encontraron clientes" : "No hay clientes registrados"}
+            </Text>
+          </View>
+        }
+      />
+
+      {/* Diálogo para agregar/editar */}
+      <Dialog visible={showDialog} onClose={handleCloseDialog} style={styles.dialog}>
+        <Text style={styles.dialogTitle}>
+          {editingClient ? "Editar cliente" : "Nuevo cliente"}
+        </Text>
+
+        <Text style={styles.label}>Nombre completo *</Text>
+        <TextInput
+          style={styles.input}
+          value={formData.nombre}
+          onChangeText={(text) => setFormData((f) => ({ ...f, nombre: text }))}
+          placeholder="Nombre completo"
+          placeholderTextColor={COLORS.muted}
+        />
+
+        <Text style={styles.label}>Documento (CI/NIT)</Text>
+        <TextInput
+          style={styles.input}
+          value={formData.documento}
+          onChangeText={(text) => setFormData((f) => ({ ...f, documento: text }))}
+          placeholder="Documento"
+          placeholderTextColor={COLORS.muted}
+        />
+
+        <Text style={styles.label}>Teléfono</Text>
+        <TextInput
+          style={styles.input}
+          value={formData.telefono}
+          onChangeText={(text) => setFormData((f) => ({ ...f, telefono: text }))}
+          placeholder="Teléfono"
+          placeholderTextColor={COLORS.muted}
+          keyboardType="phone-pad"
+        />
+
+        <Text style={styles.label}>Email</Text>
+        <TextInput
+          style={styles.input}
+          value={formData.email}
+          onChangeText={(text) => setFormData((f) => ({ ...f, email: text }))}
+          placeholder="Email"
+          placeholderTextColor={COLORS.muted}
+          keyboardType="email-address"
+          autoCapitalize="none"
+        />
+
+        <View style={styles.dialogButtons}>
+          <Button
+            onPress={handleSubmit}
+            style={styles.saveBtn}
+            disabled={submitting}
+          >
+            <Text style={styles.saveBtnText}>
+              {submitting ? "Guardando..." : (editingClient ? "Guardar" : "Crear")}
+            </Text>
+          </Button>
+          <TouchableOpacity onPress={handleCloseDialog} style={styles.cancelBtn}>
+            <Text style={styles.cancelBtnText}>Cancelar</Text>
+          </TouchableOpacity>
         </View>
       </Dialog>
-
-      {/* Dialogo de confirmación de borrado */}
-      <AlertDialog
-        visible={deleteDialogOpen}
-        onClose={() => setDeleteDialogOpen(false)}
-        onConfirm={handleConfirmDelete}
-        title="¿Eliminar cliente?"
-        description="Esta acción no se puede deshacer."
-        confirmText="Eliminar"
-        cancelText="Cancelar"
-      />
     </View>
   );
 };
@@ -229,57 +364,164 @@ const ClientsScreen: React.FC = () => {
 export default ClientsScreen;
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#08232A", paddingTop: 28 },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 18, paddingTop: 18, paddingBottom: 8 },
-  headerTitle: { color: "#FFFFFF", fontSize: 15, letterSpacing: 0.1 },
-  addBtn: { flexDirection: "row", alignItems: "center", backgroundColor: "#1CA085", paddingHorizontal: 18, paddingVertical: 7, borderRadius: 10, height: 36 },
-  addBtnText: { color: "#FFFFFF", marginLeft: 6, fontSize: 15, letterSpacing: 0.1 },
-  divider: { height: 1, backgroundColor: "#15545A", marginHorizontal: 0, marginBottom: 16, marginTop: 16 },
-  searchContainer: { flexDirection: "row", alignItems: "center", backgroundColor: "#0A3A40", borderRadius: 10, borderWidth: 1, borderColor: "#15545A", marginHorizontal: 16, marginBottom: 4, height: 38 },
-  searchInput: { flex: 1, color: "#FFFFFF", fontSize: 15, paddingHorizontal: 10, backgroundColor: "transparent" , borderWidth: 0 },
-  list: { flex: 1, paddingHorizontal: 10 },
-  emptyText: { color: "#B6C2CF", textAlign: "center", marginTop: 32, fontSize: 15 },
-  card: { marginBottom: 18, backgroundColor: "#0A3A40", borderRadius: 14, padding: 0, shadowColor: "#000", shadowOpacity: 0.10, shadowRadius: 6, borderWidth: 1, borderColor: "#15545A" },
-  cardContentColumn: { flexDirection: "column", alignItems: "stretch", justifyContent: "flex-start", padding: 16, gap: 10 },
-  cardHeaderRow: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 },
-  cardInfoColumn: { flexDirection: "column", alignItems: "flex-start", gap: 0, marginBottom: 10 },
-  cardButtonsRow: { flexDirection: "row", alignItems: "center", justifyContent: "flex-start"},
-  actionBtn: { flexDirection: "row", alignItems: "center", backgroundColor: "#0F2326", borderRadius: 8, height: 24, paddingHorizontal: 12, borderWidth: 0, flexBasis: "40.5%", minWidth: 0, marginRight: 10 },
-  actionBtnText: { color: "#FFFFFF", fontSize: 14, letterSpacing: 0.1 },
-  deleteBtn: { backgroundColor: "#0F2326", borderRadius: 8, borderWidth: 0, flexBasis: "10%", justifyContent: "center", alignItems: "center", marginRight: 0, height: 24 },
-  activeBadge: { backgroundColor: "#1D7373", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 3, alignSelf: "flex-start" },
-  inactiveBadge: { backgroundColor: "#C94A4A", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 3, alignSelf: "flex-start" },
-  badgeText: { color: "#fff", fontSize: 12 },
-  clientName: { color: "#FFFFFF", fontSize: 16, marginBottom: 2, letterSpacing: 0.1 },
-  clientDoc: { color: "#FFFFFF", fontSize: 14 },
-  clientPhone: { color: "#FFFFFF", fontSize: 14 },
-  clientEmail: { color: "#FFFFFF", fontSize: 14 },
-
-  dialogModal: {
-    backgroundColor: "#0A3A40",
-    borderRadius: 20,
-    padding: 32,
-    margin: 0,
-    width: "100%",
-    minHeight: 420,
-    alignSelf: "stretch",
-    justifyContent: "flex-start",
+  container: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+    paddingTop: 48
   },
-  dialogTitle: { color: "#FFFFFF", fontSize: 20, letterSpacing: 0.1, textAlign: "left", marginBottom: 2 },
-  dialogSubtitle: { color: "#B6C2CF", fontSize: 15, marginBottom: 18, textAlign: "left" },
-  dialogLabel: { color: "#FFFFFF", fontSize: 15, marginBottom: 2, marginTop: 12 },
-  dialogInput: {
+  centered: {
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  loadingText: {
+    color: COLORS.muted,
+    marginTop: 12,
+    fontSize: 14,
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    marginBottom: 16
+  },
+  headerTitle: {
+    color: COLORS.text,
+    fontSize: 24,
+    fontWeight: "700"
+  },
+  addBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.button,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    gap: 6,
+  },
+  addBtnText: {
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: "500"
+  },
+  searchContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: COLORS.card,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginHorizontal: 16,
+    paddingHorizontal: 12,
+    height: 44,
     marginBottom: 12,
-    backgroundColor: "#08232A",
-    color: "#FFFFFF",
+  },
+  searchIcon: {
+    marginRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    color: COLORS.text,
+    fontSize: 15,
+  },
+  filterRow: {
+    flexDirection: "row",
+    paddingHorizontal: 16,
+    marginBottom: 8,
+    gap: 8,
+  },
+  filterBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  filterBtnActive: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  filterText: {
+    color: COLORS.muted,
+    fontSize: 13,
+  },
+  filterTextActive: {
+    color: COLORS.text,
+    fontWeight: "500",
+  },
+  countText: {
+    color: COLORS.muted,
+    fontSize: 13,
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
+  list: {
+    paddingHorizontal: 16,
+    paddingBottom: 20,
+  },
+  emptyContainer: {
+    alignItems: "center",
+    marginTop: 48,
+  },
+  emptyText: {
+    color: COLORS.muted,
+    textAlign: "center",
+    marginTop: 12,
+    fontSize: 15
+  },
+  dialog: {
+    backgroundColor: COLORS.card,
+    borderRadius: 16,
+    padding: 20,
+  },
+  dialogTitle: {
+    color: COLORS.text,
+    fontSize: 20,
+    fontWeight: "600",
+    marginBottom: 16,
+  },
+  label: {
+    color: COLORS.text,
+    fontSize: 14,
+    marginBottom: 4,
+    marginTop: 8,
+  },
+  input: {
+    backgroundColor: COLORS.background,
+    color: COLORS.text,
     borderRadius: 8,
     fontSize: 15,
     borderWidth: 1,
-    borderColor: "#15545A",
+    borderColor: COLORS.border,
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 10,
   },
-  dialogBtnRow: { flexDirection: "column", gap: 8, marginTop: 18 },
-  saveBtn: { backgroundColor: "#1CA085", marginLeft: 0, borderRadius: 8, height: 40, justifyContent: "center", alignItems: "center" },
-  cancelBtn: { backgroundColor: "#0F2326", borderColor: "#0F2326", marginLeft: 0, borderRadius: 8, height: 40, justifyContent: "center", alignItems: "center" },
+  dialogButtons: {
+    marginTop: 20,
+    gap: 10,
+  },
+  saveBtn: {
+    backgroundColor: COLORS.button,
+    borderRadius: 8,
+    height: 44,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  saveBtnText: {
+    color: COLORS.text,
+    fontSize: 16,
+    fontWeight: "500",
+  },
+  cancelBtn: {
+    backgroundColor: "transparent",
+    borderRadius: 8,
+    height: 44,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  cancelBtnText: {
+    color: COLORS.muted,
+    fontSize: 15,
+  },
 });

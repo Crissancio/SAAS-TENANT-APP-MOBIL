@@ -4,9 +4,9 @@ import { Feather, Ionicons } from "@expo/vector-icons";
 
 const TABS = [
   { key: "ventas", label: "Ventas", icon: <Feather name="shopping-cart" size={24} /> },
+  { key: "productos", label: "Productos", icon: <Feather name="package" size={24} /> },
   { key: "clientes", label: "Clientes", icon: <Feather name="users" size={24} /> },
-  { key: "inventario", label: "Inventario", icon: <Feather name="box" size={24} /> },
-  { key: "notificaciones", label: "Notificaciones", icon: <Ionicons name="notifications-outline" size={24} /> },
+  { key: "notificaciones", label: "Alertas", icon: <Ionicons name="notifications-outline" size={24} /> },
   { key: "perfil", label: "Perfil", icon: <Feather name="user" size={24} /> },
 ];
 

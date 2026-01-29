@@ -10,13 +10,15 @@ export default function TabsLayout() {
 
   // Determinar el tab activo según la ruta
   let activeTab = "ventas";
-  if (pathname.startsWith("/clients")) activeTab = "clientes";
+  if (pathname.startsWith("/products")) activeTab = "productos";
+  else if (pathname.startsWith("/clients")) activeTab = "clientes";
   else if (pathname.startsWith("/inventory")) activeTab = "inventario";
   else if (pathname.startsWith("/notifications")) activeTab = "notificaciones";
   else if (pathname.startsWith("/profile")) activeTab = "perfil";
 
   const handleTabChange = (key: string) => {
     if (key === "ventas") router.push("/ventas" as any);
+    else if (key === "productos") router.push("/products" as any);
     else if (key === "clientes") router.push("/clients" as any);
     else if (key === "inventario") router.push("/inventory" as any);
     else if (key === "notificaciones") router.push("/notifications" as any);
