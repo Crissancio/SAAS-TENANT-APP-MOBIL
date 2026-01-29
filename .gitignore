@@ -43,3 +43,5 @@ app-example
 /android
 
 .env
+/app-sistema/.env.local
+/app-sistema/.env
