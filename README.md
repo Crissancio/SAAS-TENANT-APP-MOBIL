@@ -21,6 +21,18 @@
 
 4. Escanea el código QR con la app Expo Go en tu dispositivo, o usa un emulador Android/iOS.
 
+
+### Configuración de variables de entorno
+
+Antes de iniciar el proyecto, crea un archivo `.env` en la raíz de la carpeta `app-sistema` (o donde esté tu código fuente) con las variables necesarias para la conexión a tu backend, API keys, etc. Por ejemplo:
+
+```
+API_URL=https://tuservidor.com/api
+OTRA_VARIABLE=valor
+```
+
+Asegúrate de no subir el archivo `.env` al repositorio (debe estar en `.gitignore`).
+
 ### Comandos útiles
 
 - `npm run android` — Inicia la app directamente en un emulador/dispositivo Android.
